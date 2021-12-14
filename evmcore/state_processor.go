@@ -19,6 +19,7 @@ package evmcore
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"path"
 	"strconv"
@@ -69,6 +70,7 @@ func (p *StateProcessor) Process(
 		header       = block.Header()
 		blockContext = NewEVMBlockContext(header, p.bc, nil)
 		vmenv        = vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
+		copyUsedGas  = *usedGas
 	)
 	// Iterate over and process the individual transactions
 	txLogger, err := NewLoggerContext("transactions", header, types.MakeSigner(p.config, header.Number), 10000, 1000)
@@ -112,6 +114,7 @@ func (p *StateProcessor) Process(
 		allLogs = append(allLogs, receipt.Logs...)
 	}
 
+	block.GasUsed = *usedGas - copyUsedGas
 	if err = dumpBlock(header.Number.Uint64(), 10000, 1000, block); err != nil {
 		return
 	}
@@ -229,6 +232,11 @@ func getFile(taskName string, blockNumber uint64, perFolder, perFile uint64) (*o
 	return file, nil
 }
 
+type MyActionTrace struct {
+	*txtrace.ActionTrace
+	BlockNumber *big.Int
+}
+
 func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace.ActionTrace) error {
 	file, err := getFile("traces", blockNumber, perFolder, perFile)
 	if err != nil {
@@ -238,7 +246,11 @@ func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace
 
 	encoder := json.NewEncoder(file)
 	for _, trace := range *traces {
-		err := encoder.Encode(trace)
+		myTrace := &MyActionTrace{
+			ActionTrace: &trace,
+			BlockNumber: &trace.BlockNumber,
+		}
+		err := encoder.Encode(myTrace)
 		if err != nil {
 			return fmt.Errorf("encode log failed: %w", err)
 		}
@@ -263,7 +275,7 @@ func dumpBlock(blockNumber uint64, perFolder, perFile uint64, block *EvmBlock) e
 		"miner":       block.Coinbase,
 		//"difficulty":  block.Difficulty(),
 		//"nonce":       block.Nonce(),
-		//"size":        block.Size(),
+		"size": block.EstimateSize(),
 	}
 	encoder := json.NewEncoder(file)
 	if err := encoder.Encode(entry); err != nil {
