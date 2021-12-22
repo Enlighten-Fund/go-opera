@@ -323,7 +323,7 @@ func (ctx *LoggerContext) dumpTransaction(index int, tx *types.Transaction, rece
 	from, _ := types.Sender(ctx.signer, tx)
 	entry := map[string]interface{}{
 		"blockNumber":      ctx.header.Number.Uint64(),
-		"blockHash":        ctx.header.Number.Uint64(),
+		"blockHash":        ctx.header.Hash,
 		"transactionIndex": index,
 		"transactionHash":  tx.Hash(),
 		"from":             from,
