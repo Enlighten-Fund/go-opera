@@ -33,6 +33,10 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+var (
+	ProcessingInternalTransaction bool
+)
+
 // StateProcessor is a basic Processor, which takes care of transitioning
 // state from one point to another.
 //
@@ -63,6 +67,7 @@ func (p *StateProcessor) Process(
 	receipts types.Receipts, allLogs []*types.Log, skipped []uint32, err error,
 ) {
 	skipped = make([]uint32, 0, len(block.Transactions))
+	ProcessingInternalTransaction = internal
 	var (
 		gp           = new(GasPool).AddGas(block.GasLimit)
 		receipt      *types.Receipt
@@ -73,12 +78,12 @@ func (p *StateProcessor) Process(
 		copyUsedGas  = *usedGas
 	)
 	// Iterate over and process the individual transactions
-	txLogger, err := NewLoggerContext("transactions", header, types.MakeSigner(p.config, header.Number), 10000, 1000)
+	txLogger, err := NewLoggerContext("transactions", header, types.MakeSigner(p.config, header.Number), 100000, 1000)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	defer txLogger.Close()
-	receiptsLogger, err := NewLoggerContext("receipts", header, types.MakeSigner(p.config, header.Number), 10000, 1000)
+	receiptsLogger, err := NewLoggerContext("receipts", header, types.MakeSigner(p.config, header.Number), 100000, 1000)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -104,19 +109,23 @@ func (p *StateProcessor) Process(
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		if err := txLogger.dumpTransaction(i, tx, receipt); err != nil {
-			return nil, nil, nil, fmt.Errorf("could not dump tx %d [%v]: %w", i, tx.Hash().Hex(), err)
-		}
-		if err := receiptsLogger.dumpReceipt(receipt); err != nil {
-			return nil, nil, nil, fmt.Errorf("could not dump receipt %d [%v]: %w", i, tx.Hash().Hex(), err)
+		if !internal {
+			if err := txLogger.dumpTransaction(i, tx, receipt); err != nil {
+				return nil, nil, nil, fmt.Errorf("could not dump tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
+			if err := receiptsLogger.dumpReceipt(receipt); err != nil {
+				return nil, nil, nil, fmt.Errorf("could not dump receipt %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 	}
 
 	block.GasUsed = *usedGas - copyUsedGas
-	if err = dumpBlock(header.Number.Uint64(), 10000, 1000, block); err != nil {
-		return
+	if !internal {
+		if err = dumpBlock(header.Number.Uint64(), 100000, 1000, block); err != nil {
+			return
+		}
 	}
 
 	return
@@ -200,12 +209,12 @@ func applyTransaction(
 	receipt.TransactionIndex = uint(statedb.TxIndex())
 
 	// Set post informations and save trace
-	if traceLogger != nil {
+	if traceLogger != nil && !ProcessingInternalTransaction {
 		traceLogger.SetGasUsed(result.UsedGas)
 		traceLogger.SetNewAddress(receipt.ContractAddress)
 		traceLogger.ProcessTx()
 		//traceLogger.SaveTrace()
-		if err := dumpTraces(header.Number.Uint64(), 10000, 1000, traceLogger.GetTraceActions()); err != nil {
+		if err := dumpTraces(header.Number.Uint64(), 100000, 1000, traceLogger.GetTraceActions()); err != nil {
 			return nil, 0, result == nil, err
 		}
 	}
@@ -234,7 +243,8 @@ func getFile(taskName string, blockNumber uint64, perFolder, perFile uint64) (*o
 
 type MyActionTrace struct {
 	*txtrace.ActionTrace
-	BlockNumber *big.Int
+	BlockNumber        *big.Int
+	TransactionTraceID int `json:"transactionTraceID"`
 }
 
 func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace.ActionTrace) error {
@@ -245,10 +255,11 @@ func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
-	for _, trace := range *traces {
+	for id, trace := range *traces {
 		myTrace := &MyActionTrace{
-			ActionTrace: &trace,
-			BlockNumber: &trace.BlockNumber,
+			ActionTrace:        &trace,
+			BlockNumber:        &trace.BlockNumber,
+			TransactionTraceID: id,
 		}
 		err := encoder.Encode(myTrace)
 		if err != nil {
