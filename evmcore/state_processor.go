@@ -17,8 +17,12 @@
 package evmcore
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
+	"path"
+	"strconv"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -30,6 +34,10 @@ import (
 	"github.com/Fantom-foundation/go-opera/txtrace"
 
 	"github.com/Fantom-foundation/go-opera/utils/gsignercache"
+)
+
+var (
+	ProcessingInternalTransaction bool
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -62,6 +70,7 @@ func (p *StateProcessor) Process(
 	receipts types.Receipts, allLogs []*types.Log, skipped []uint32, err error,
 ) {
 	skipped = make([]uint32, 0, len(block.Transactions))
+	ProcessingInternalTransaction = internal
 	var (
 		gp           = new(GasPool).AddGas(block.GasLimit)
 		receipt      *types.Receipt
@@ -71,7 +80,18 @@ func (p *StateProcessor) Process(
 		vmenv        = vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
 		blockHash    = block.Hash
 		blockNumber  = block.Number
+		copyUsedGas  = *usedGas
 	)
+	txLogger, err := NewLoggerContext("transactions", header, types.MakeSigner(p.config, header.Number), 100000, 1000)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer txLogger.Close()
+	receiptsLogger, err := NewLoggerContext("receipts", header, types.MakeSigner(p.config, header.Number), 100000, 1000)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer receiptsLogger.Close()
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions {
 		var msg types.Message
@@ -94,8 +114,23 @@ func (p *StateProcessor) Process(
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
+		if !internal {
+			if err := txLogger.dumpTransaction(i, tx, receipt); err != nil {
+				return nil, nil, nil, fmt.Errorf("could not dump tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
+			if err := receiptsLogger.dumpReceipt(receipt); err != nil {
+				return nil, nil, nil, fmt.Errorf("could not dump receipt %d [%v]: %w", i, tx.Hash().Hex(), err)
+			}
+		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+	}
+
+	block.GasUsed = *usedGas - copyUsedGas
+	if !internal {
+		if err = dumpBlock(header.Number.Uint64(), 100000, 1000, block); err != nil {
+			return
+		}
 	}
 	return
 }
@@ -180,12 +215,150 @@ func applyTransaction(
 	receipt.TransactionIndex = uint(statedb.TxIndex())
 
 	// Set post informations and save trace
-	if traceLogger != nil {
+	if traceLogger != nil && !ProcessingInternalTransaction {
 		traceLogger.SetGasUsed(result.UsedGas)
 		traceLogger.SetNewAddress(receipt.ContractAddress)
 		traceLogger.ProcessTx()
-		traceLogger.SaveTrace()
+		//traceLogger.SaveTrace()
+		if err := dumpTraces(blockNumber.Uint64(), 100000, 1000, traceLogger.GetTraceActions()); err != nil {
+			return nil, 0, result == nil, err
+		}
 	}
 
 	return receipt, result.UsedGas, false, err
+}
+
+func getFile(taskName string, blockNumber uint64, perFolder, perFile uint64) (*os.File, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("get current work dir failed: %w", err)
+	}
+
+	logPath := path.Join(cwd, taskName, strconv.FormatUint(blockNumber/perFolder, 10), strconv.FormatUint(blockNumber/perFile, 10)+".log")
+	fmt.Printf("log path: %v, block: %v\n", logPath, blockNumber)
+	if err := os.MkdirAll(path.Dir(logPath), 0755); err != nil {
+		return nil, fmt.Errorf("mkdir for all parents [%v] failed: %w", path.Dir(logPath), err)
+	}
+
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("create file %s failed: %w", logPath, err)
+	}
+	return file, nil
+}
+
+type MyActionTrace struct {
+	*txtrace.ActionTrace
+	BlockNumber        *big.Int
+	TransactionTraceID int `json:"transactionTraceID"`
+}
+
+func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace.ActionTrace) error {
+	file, err := getFile("traces", blockNumber, perFolder, perFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	for id, trace := range *traces {
+		myTrace := &MyActionTrace{
+			ActionTrace:        &trace,
+			BlockNumber:        &trace.BlockNumber,
+			TransactionTraceID: id,
+		}
+		err := encoder.Encode(myTrace)
+		if err != nil {
+			return fmt.Errorf("encode log failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func dumpBlock(blockNumber uint64, perFolder, perFile uint64, block *EvmBlock) error {
+	file, err := getFile("blocks", blockNumber, perFolder, perFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	entry := map[string]interface{}{
+		"timestamp":   block.Time,
+		"blockNumber": block.NumberU64(),
+		"blockHash":   block.Hash,
+		"parentHash":  block.ParentHash,
+		"gasLimit":    block.GasLimit,
+		"gasUsed":     block.GasUsed,
+		"miner":       block.Coinbase,
+		//"difficulty":  block.Difficulty(),
+		//"nonce":       block.Nonce(),
+		"size": block.EstimateSize(),
+	}
+	encoder := json.NewEncoder(file)
+	if err := encoder.Encode(entry); err != nil {
+		return fmt.Errorf("failed to encode block entry %w", err)
+	}
+	return nil
+}
+
+type LoggerContext struct {
+	file    *os.File
+	header  *EvmHeader
+	signer  types.Signer
+	encoder *json.Encoder
+}
+
+func NewLoggerContext(taskName string, header *EvmHeader, signer types.Signer, perFolder, perFile uint64) (*LoggerContext, error) {
+	file, err := getFile(taskName, header.Number.Uint64(), perFolder, perFile)
+	if err != nil {
+		return nil, err
+	}
+	return &LoggerContext{
+		file:    file,
+		header:  header,
+		signer:  signer,
+		encoder: json.NewEncoder(file),
+	}, nil
+}
+
+func (ctx *LoggerContext) Close() error {
+	return ctx.file.Close()
+}
+
+func (ctx *LoggerContext) dumpTransaction(index int, tx *types.Transaction, receipt *types.Receipt) error {
+	from, _ := types.Sender(ctx.signer, tx)
+	entry := map[string]interface{}{
+		"blockNumber":      ctx.header.Number.Uint64(),
+		"blockHash":        ctx.header.Hash,
+		"transactionIndex": index,
+		"transactionHash":  tx.Hash(),
+		"from":             from,
+		"to":               tx.To(),
+		"gas":              tx.Gas(),
+		"gasUsed":          receipt.GasUsed,
+		"gasPrice":         tx.GasPrice(),
+		"data":             tx.Data(),
+		"accessList":       tx.AccessList(),
+		"nonce":            tx.Nonce(),
+		//"gasFeeCap":         tx.GasFeeCap(),
+		//"gasTipCap":         tx.GasTipCap(),
+		//"effectiveGasPrice": effectiveGasPrice,
+		"type":   tx.Type(),
+		"value":  tx.Value(),
+		"status": receipt.Status,
+	}
+	if err := ctx.encoder.Encode(entry); err != nil {
+		return fmt.Errorf("failed to encode transaction %d [%v]: %w", index, tx.Hash(), err)
+	}
+	return nil
+}
+
+func (ctx *LoggerContext) dumpReceipt(receipt *types.Receipt) error {
+	for _, log := range receipt.Logs {
+		err := ctx.encoder.Encode(log)
+		if err != nil {
+			return fmt.Errorf("encode log failed: %w", err)
+		}
+	}
+	return nil
 }
