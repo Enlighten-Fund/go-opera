@@ -273,6 +273,14 @@ func (tr *TraceStructLogger) reset() {
 	tr.reverted = false
 }
 
+func (tr *TraceStructLogger) Reset() {
+	tr.to = nil
+	tr.from = nil
+	tr.inputData = nil
+	tr.rootTrace = nil
+	tr.reverted = false
+}
+
 // SetTx basic setter
 func (tr *TraceStructLogger) SetTx(tx common.Hash) {
 	tr.tx = tx
