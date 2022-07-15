@@ -258,11 +258,11 @@ func (*TraceStructLogger) CaptureEnter(typ vm.OpCode, from common.Address, to co
 
 // CaptureExit is called when returning from an inner call
 func (tr *TraceStructLogger) CaptureExit(output []byte, gasUsed uint64, err error) {
-        // When going back from inner call
-        result := tr.rootTrace.Stack[len(tr.rootTrace.Stack)-1].Result
-        if result != nil {
-                result.GasUsed = hexutil.Uint64(gasUsed)
-        }
+	// When going back from inner call
+	result := tr.rootTrace.Stack[len(tr.rootTrace.Stack)-1].Result
+	if result != nil {
+		result.GasUsed = hexutil.Uint64(gasUsed)
+	}
 }
 
 // CaptureFault implements the Tracer interface to trace an execution fault
@@ -273,14 +273,6 @@ func (tr *TraceStructLogger) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, 
 
 // Reset function to be able to reuse logger
 func (tr *TraceStructLogger) reset() {
-	tr.to = nil
-	tr.from = nil
-	tr.inputData = nil
-	tr.rootTrace = nil
-	tr.reverted = false
-}
-
-func (tr *TraceStructLogger) Reset() {
 	tr.to = nil
 	tr.from = nil
 	tr.inputData = nil

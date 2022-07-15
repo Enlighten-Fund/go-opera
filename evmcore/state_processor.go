@@ -39,6 +39,7 @@ import (
 
 var (
 	ProcessingInternalTransaction bool
+	PrevBlockNumber               uint64 = 0
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -71,7 +72,6 @@ func (p *StateProcessor) Process(
 	receipts types.Receipts, allLogs []*types.Log, skipped []uint32, err error,
 ) {
 	skipped = make([]uint32, 0, len(block.Transactions))
-	ProcessingInternalTransaction = internal
 	var (
 		gp           = new(GasPool).AddGas(block.GasLimit)
 		receipt      *types.Receipt
@@ -96,6 +96,7 @@ func (p *StateProcessor) Process(
 	defer receiptsLogger.Close()
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions {
+		ProcessingInternalTransaction = internaltx.IsInternal(tx)
 		msg, err := TxAsMessage(tx, signer, header.BaseFee)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
@@ -111,7 +112,7 @@ func (p *StateProcessor) Process(
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
-		if !internal {
+		if !internaltx.IsInternal(tx) {
 			if err := txLogger.dumpTransaction(i, tx, receipt); err != nil {
 				return nil, nil, nil, fmt.Errorf("could not dump tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
@@ -124,10 +125,11 @@ func (p *StateProcessor) Process(
 	}
 
 	block.GasUsed = *usedGas - copyUsedGas
-	if !internal {
+	if PrevBlockNumber != header.Number.Uint64() {
 		if err = dumpBlock(header.Number.Uint64(), 100000, 1000, block); err != nil {
 			return
 		}
+		PrevBlockNumber = header.Number.Uint64()
 	}
 	return
 }
@@ -220,9 +222,6 @@ func applyTransaction(
 		if err := dumpTraces(blockNumber.Uint64(), 100000, 1000, traceLogger.GetTraceActions()); err != nil {
 			return nil, 0, result == nil, err
 		}
-
-		// clean traceLogger
-		traceLogger.Reset()
 	}
 
 	return receipt, result.UsedGas, false, err
