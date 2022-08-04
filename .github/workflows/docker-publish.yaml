@@ -3,7 +3,11 @@ name: GethPublisher
 on:
   workflow_dispatch:
   push:
-    branches: [ dev-hanwang-1.1.1-rc.2 ]
+#    branches: [ main, feature/* ]
+    # Publish semver tags as releases.
+    tags: [ 'v*.*.*' ]
+#  pull_request:
+#    branches: [ main ]
 
 env:
   # Use docker.io for Docker Hub if empty
@@ -14,7 +18,12 @@ env:
 jobs:
 
   build:
+
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
     steps:
       - uses: actions/checkout@v2
 
@@ -37,6 +46,10 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern=v{{raw}}
+
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
       - name: Build and push Docker image
