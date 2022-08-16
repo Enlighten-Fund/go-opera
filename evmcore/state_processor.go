@@ -23,6 +23,7 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -265,9 +266,8 @@ func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
+	sb := &strings.Builder{}
+	encoder := json.NewEncoder(sb)
 	for id, trace := range *traces {
 		myTrace := &MyActionTrace{
 			ActionTrace:        &trace,
@@ -278,6 +278,9 @@ func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace
 		if err != nil {
 			return fmt.Errorf("encode log failed: %w", err)
 		}
+	}
+	if _, err := file.WriteString(sb.String()); err != nil {
+		return err
 	}
 	return nil
 }
@@ -310,6 +313,7 @@ func dumpBlock(blockNumber uint64, perFolder, perFile uint64, block *EvmBlock) e
 
 type LoggerContext struct {
 	file    *os.File
+	sb      *strings.Builder
 	header  *EvmHeader
 	signer  types.Signer
 	encoder *json.Encoder
@@ -320,8 +324,10 @@ func NewLoggerContext(taskName string, header *EvmHeader, signer types.Signer, p
 	if err != nil {
 		return nil, err
 	}
+	sb := &strings.Builder{}
 	return &LoggerContext{
 		file:    file,
+		sb:      sb,
 		header:  header,
 		signer:  signer,
 		encoder: json.NewEncoder(file),
@@ -329,6 +335,9 @@ func NewLoggerContext(taskName string, header *EvmHeader, signer types.Signer, p
 }
 
 func (ctx *LoggerContext) Close() error {
+	if _, err := ctx.file.WriteString(ctx.sb.String()); err != nil {
+		return err
+	}
 	return ctx.file.Close()
 }
 
