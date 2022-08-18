@@ -94,11 +94,7 @@ func (p *StateProcessor) Process(
 		return nil, nil, nil, err
 	}
 	defer txLogger.Close()
-	receiptsLogger, err := NewLoggerContext("receipts", header, types.MakeSigner(p.config, header.Number), 100000, 1000)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	defer receiptsLogger.Close()
+
 	// Iterate over and process the individual transactions
 	var totaltx time.Duration = 0.0
 	var totalrc time.Duration = 0.0
@@ -129,7 +125,7 @@ func (p *StateProcessor) Process(
 			}
 			totaltx += time.Since(txstart)
 			rcstart := time.Now()
-			if err := receiptsLogger.dumpReceipt(receipt); err != nil {
+			if err := dumpReceipt(block.NumberU64(), 100000, 1000, receipt); err != nil {
 				return nil, nil, nil, fmt.Errorf("could not dump receipt %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
 			totalrc += time.Since(rcstart)
@@ -389,12 +385,22 @@ func (ctx *LoggerContext) dumpTransaction(index int, tx *types.Transaction, rece
 	return nil
 }
 
-func (ctx *LoggerContext) dumpReceipt(receipt *types.Receipt) error {
+func dumpReceipt(blockNumber uint64, perFolder, perFile uint64, receipt *types.Receipt) error {
+	file, err := getFile("receipts", blockNumber, perFolder, perFile)
+	if err != nil {
+		return err
+	}
+	sb := &strings.Builder{}
+	encoder := json.NewEncoder(sb)
+
 	for _, log := range receipt.Logs {
-		err := ctx.encoder.Encode(log)
+		err := encoder.Encode(log)
 		if err != nil {
 			return fmt.Errorf("encode log failed: %w", err)
 		}
+	}
+	if _, err := file.WriteString(sb.String()); err != nil {
+		return err
 	}
 	return nil
 }
