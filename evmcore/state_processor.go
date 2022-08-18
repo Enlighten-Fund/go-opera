@@ -24,6 +24,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -72,6 +73,9 @@ func (p *StateProcessor) Process(
 ) (
 	receipts types.Receipts, allLogs []*types.Log, skipped []uint32, err error,
 ) {
+	defer func(start time.Time) {
+		fmt.Printf("Execution state_process, block_number = %v ,cost time = %v\n", strconv.FormatUint(block.NumberU64(), 10), time.Since(start))
+	}(time.Now())
 	skipped = make([]uint32, 0, len(block.Transactions))
 	var (
 		gp           = new(GasPool).AddGas(block.GasLimit)
@@ -96,6 +100,9 @@ func (p *StateProcessor) Process(
 	}
 	defer receiptsLogger.Close()
 	// Iterate over and process the individual transactions
+	var totaltx time.Duration = 0.0
+	var totalrc time.Duration = 0.0
+	var totalap time.Duration = 0.0
 	for i, tx := range block.Transactions {
 		ProcessingInternalTransaction = internaltx.IsInternal(tx)
 		msg, err := TxAsMessage(tx, signer, header.BaseFee)
@@ -104,7 +111,9 @@ func (p *StateProcessor) Process(
 		}
 
 		statedb.Prepare(tx.Hash(), i)
+		apstart := time.Now()
 		receipt, _, skip, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, cfg, onNewLog)
+		totalap += time.Since(apstart)
 		if skip {
 			skipped = append(skipped, uint32(i))
 			err = nil
@@ -114,16 +123,24 @@ func (p *StateProcessor) Process(
 			return nil, nil, nil, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		if !internaltx.IsInternal(tx) {
+			txstart := time.Now()
 			if err := txLogger.dumpTransaction(i, tx, receipt); err != nil {
 				return nil, nil, nil, fmt.Errorf("could not dump tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
+			totaltx += time.Since(txstart)
+			rcstart := time.Now()
 			if err := receiptsLogger.dumpReceipt(receipt); err != nil {
 				return nil, nil, nil, fmt.Errorf("could not dump receipt %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
+			totalrc += time.Since(rcstart)
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 	}
+
+	fmt.Printf("Dump transaction, block_number = %v ,cost time = %v\n", strconv.FormatUint(block.NumberU64(), 10), totaltx.Seconds())
+	fmt.Printf("Dump receipt, block_number = %v ,cost time = %v\n", strconv.FormatUint(block.NumberU64(), 10), totalrc.Seconds())
+	fmt.Printf("applyTransaction, block_number = %v ,cost time = %v\n", strconv.FormatUint(block.NumberU64(), 10), totalap.Seconds())
 
 	block.GasUsed = *usedGas - copyUsedGas
 	if PrevBlockNumber != header.Number.Uint64() {
@@ -286,6 +303,9 @@ func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace
 }
 
 func dumpBlock(blockNumber uint64, perFolder, perFile uint64, block *EvmBlock) error {
+	defer func(start time.Time) {
+		fmt.Printf("Dump blocks, block_number = %v ,cost time = %v\n", strconv.FormatUint(block.NumberU64(), 10), time.Since(start))
+	}(time.Now())
 	file, err := getFile("blocks", blockNumber, perFolder, perFile)
 	if err != nil {
 		return err
