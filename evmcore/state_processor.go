@@ -404,5 +404,3 @@ func dumpReceipt(blockNumber uint64, perFolder, perFile uint64, receipt *types.R
 	}
 	return nil
 }
-
-// test image update
