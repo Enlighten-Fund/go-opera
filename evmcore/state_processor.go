@@ -95,10 +95,17 @@ func (p *StateProcessor) Process(
 	}
 	defer txLogger.Close()
 
+	receiptsLogger, err := NewLoggerContext("receipts", header, types.MakeSigner(p.config, header.Number), 100000, 1000)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer receiptsLogger.Close()
+
 	// Iterate over and process the individual transactions
 	var totaltx time.Duration = 0.0
 	var totalrc time.Duration = 0.0
 	var totalap time.Duration = 0.0
+	var tracelist *[]txtrace.ActionTrace
 	for i, tx := range block.Transactions {
 		ProcessingInternalTransaction = internaltx.IsInternal(tx)
 		msg, err := TxAsMessage(tx, signer, header.BaseFee)
@@ -108,7 +115,7 @@ func (p *StateProcessor) Process(
 
 		statedb.Prepare(tx.Hash(), i)
 		apstart := time.Now()
-		receipt, _, skip, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, cfg, onNewLog)
+		receipt, _, skip, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, cfg, tracelist, onNewLog)
 		totalap += time.Since(apstart)
 		if skip {
 			skipped = append(skipped, uint32(i))
@@ -125,13 +132,17 @@ func (p *StateProcessor) Process(
 			}
 			totaltx += time.Since(txstart)
 			rcstart := time.Now()
-			if err := dumpReceipt(block.NumberU64(), 100000, 1000, receipt); err != nil {
+			if err := receiptsLogger.dumpReceipt(receipt); err != nil {
 				return nil, nil, nil, fmt.Errorf("could not dump receipt %d [%v]: %w", i, tx.Hash().Hex(), err)
 			}
 			totalrc += time.Since(rcstart)
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+	}
+
+	if err := dumpTraces(block.NumberU64(), 100000, 1000, tracelist); err != nil {
+		return nil, nil, nil, err
 	}
 
 	fmt.Printf("Dump transaction, block_number = %v ,cost time = %v\n", strconv.FormatUint(block.NumberU64(), 10), totaltx.Seconds())
@@ -159,6 +170,7 @@ func applyTransaction(
 	usedGas *uint64,
 	evm *vm.EVM,
 	cfg vm.Config,
+	tracelist *[]txtrace.ActionTrace,
 	onNewLog func(*types.Log, *state.StateDB),
 ) (
 	*types.Receipt,
@@ -233,9 +245,10 @@ func applyTransaction(
 		traceLogger.SetNewAddress(receipt.ContractAddress)
 		traceLogger.ProcessTx()
 		//traceLogger.SaveTrace()
-		if err := dumpTraces(blockNumber.Uint64(), 100000, 1000, traceLogger.GetTraceActions()); err != nil {
-			return nil, 0, result == nil, err
-		}
+		tracelist = append(tracelist, traceLogger.GetTraceActions())
+		//if err := dumpTraces(blockNumber.Uint64(), 100000, 1000, traceLogger.GetTraceActions()); err != nil {
+		//	return nil, 0, result == nil, err
+		//}
 	}
 
 	return receipt, result.UsedGas, false, err
@@ -351,6 +364,9 @@ func NewLoggerContext(taskName string, header *EvmHeader, signer types.Signer, p
 }
 
 func (ctx *LoggerContext) Close() error {
+	defer func(start time.Time) {
+		fmt.Printf("length of data = %d, cost time = %v\n", len(ctx.sb.String()), time.Since(start))
+	}(time.Now())
 	if _, err := ctx.file.WriteString(ctx.sb.String()); err != nil {
 		return err
 	}
@@ -385,24 +401,12 @@ func (ctx *LoggerContext) dumpTransaction(index int, tx *types.Transaction, rece
 	return nil
 }
 
-func dumpReceipt(blockNumber uint64, perFolder, perFile uint64, receipt *types.Receipt) error {
-	file, err := getFile("receipts", blockNumber, perFolder, perFile)
-	if err != nil {
-		return err
-	}
-	sb := &strings.Builder{}
-	encoder := json.NewEncoder(sb)
-
+func (ctx *LoggerContext) dumpReceipt(receipt *types.Receipt) error {
 	for _, log := range receipt.Logs {
-		err := encoder.Encode(log)
+		err := ctx.encoder.Encode(log)
 		if err != nil {
 			return fmt.Errorf("encode log failed: %w", err)
 		}
 	}
-	if _, err := file.WriteString(sb.String()); err != nil {
-		return err
-	}
 	return nil
 }
-
-// test
