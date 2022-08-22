@@ -386,7 +386,6 @@ func (ctx *LoggerContext) dumpTransaction(index int, tx *types.Transaction, rece
 }
 
 func dumpReceipt(blockNumber uint64, perFolder, perFile uint64, receipt *types.Receipt) error {
-	// dump Receipt
 	file, err := getFile("receipts", blockNumber, perFolder, perFile)
 	if err != nil {
 		return err
