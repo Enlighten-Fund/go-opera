@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/Fantom-foundation/go-opera/txtrace"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -100,7 +101,8 @@ func (b *BlockGen) AddTxWithChain(bc DummyChain, tx *types.Transaction) {
 	b.statedb.Prepare(tx.Hash(), len(b.txs))
 	blockContext := NewEVMBlockContext(b.header, bc, nil)
 	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, b.statedb, b.config, opera.DefaultVMConfig)
-	receipt, _, _, err := applyTransaction(msg, b.config, b.gasPool, b.statedb, b.header.Number, b.header.Hash, tx, &b.header.GasUsed, vmenv, opera.DefaultVMConfig, func(log *types.Log, db *state.StateDB) {})
+	tracelist := make([]txtrace.ActionTrace, 0)
+	receipt, _, _, err := applyTransaction(msg, b.config, b.gasPool, b.statedb, b.header.Number, b.header.Hash, tx, &b.header.GasUsed, vmenv, opera.DefaultVMConfig, &tracelist, func(log *types.Log, db *state.StateDB) {})
 	if err != nil {
 		panic(err)
 	}

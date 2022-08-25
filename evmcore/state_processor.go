@@ -94,15 +94,18 @@ func (p *StateProcessor) Process(
 		return nil, nil, nil, err
 	}
 	defer txLogger.Close()
+
 	receiptsLogger, err := NewLoggerContext("receipts", header, types.MakeSigner(p.config, header.Number), 100000, 1000)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	defer receiptsLogger.Close()
+
 	// Iterate over and process the individual transactions
 	var totaltx time.Duration = 0.0
 	var totalrc time.Duration = 0.0
 	var totalap time.Duration = 0.0
+	tracelist := make([]txtrace.ActionTrace, 0)
 	for i, tx := range block.Transactions {
 		ProcessingInternalTransaction = internaltx.IsInternal(tx)
 		msg, err := TxAsMessage(tx, signer, header.BaseFee)
@@ -112,7 +115,7 @@ func (p *StateProcessor) Process(
 
 		statedb.Prepare(tx.Hash(), i)
 		apstart := time.Now()
-		receipt, _, skip, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, cfg, onNewLog)
+		receipt, _, skip, err = applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, cfg, &tracelist, onNewLog)
 		totalap += time.Since(apstart)
 		if skip {
 			skipped = append(skipped, uint32(i))
@@ -136,6 +139,10 @@ func (p *StateProcessor) Process(
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+	}
+
+	if err := dumpTraces(block.NumberU64(), 100000, 1000, &tracelist); err != nil {
+		return nil, nil, nil, err
 	}
 
 	fmt.Printf("Dump transaction, block_number = %v ,cost time = %v\n", strconv.FormatUint(block.NumberU64(), 10), totaltx.Seconds())
@@ -163,6 +170,7 @@ func applyTransaction(
 	usedGas *uint64,
 	evm *vm.EVM,
 	cfg vm.Config,
+	tracelist *[]txtrace.ActionTrace,
 	onNewLog func(*types.Log, *state.StateDB),
 ) (
 	*types.Receipt,
@@ -237,9 +245,10 @@ func applyTransaction(
 		traceLogger.SetNewAddress(receipt.ContractAddress)
 		traceLogger.ProcessTx()
 		//traceLogger.SaveTrace()
-		if err := dumpTraces(blockNumber.Uint64(), 100000, 1000, traceLogger.GetTraceActions()); err != nil {
-			return nil, 0, result == nil, err
-		}
+		*tracelist = append(*tracelist, (*(traceLogger.GetTraceActions()))...)
+		//if err := dumpTraces(blockNumber.Uint64(), 100000, 1000, traceLogger.GetTraceActions()); err != nil {
+		//	return nil, 0, result == nil, err
+		//}
 	}
 
 	return receipt, result.UsedGas, false, err
@@ -296,6 +305,10 @@ func dumpTraces(blockNumber uint64, perFolder, perFile uint64, traces *[]txtrace
 			return fmt.Errorf("encode log failed: %w", err)
 		}
 	}
+	defer func(start time.Time) {
+		fmt.Printf("length of data = %d, cost time = %v\n", sb.Len(), time.Since(start))
+	}(time.Now())
+
 	if _, err := file.WriteString(sb.String()); err != nil {
 		return err
 	}
@@ -355,6 +368,7 @@ func NewLoggerContext(taskName string, header *EvmHeader, signer types.Signer, p
 }
 
 func (ctx *LoggerContext) Close() error {
+	fmt.Printf("length of data = %d\n", len(ctx.sb.String()))
 	if _, err := ctx.file.WriteString(ctx.sb.String()); err != nil {
 		return err
 	}
